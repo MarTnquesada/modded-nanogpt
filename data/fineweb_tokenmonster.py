@@ -90,7 +90,7 @@ os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 
 # check the vocabulary file that's expected
 VOCAB_HASH_SHA256 = "7cf495836f9112c1d379d298d7a77f88fc43ec6717760cc8384f56905291e473"
-with open(os.path.join(os.path.dirname(__file__), VOCAB_NAME), "rb") as f:
+with open(os.path.join(os.path.dirname(__file__), f"{VOCAB_NAME}.vocab"), "rb") as f:
     assert hashlib.sha256(f.read()).hexdigest() == VOCAB_HASH_SHA256
 
 
