@@ -15,5 +15,5 @@ dependencies = [
 ]
 
 [dependency-groups]
-data = ["datasets", "tiktoken"]
+data = ["datasets", "tiktoken", "tokenmonster"]
 
