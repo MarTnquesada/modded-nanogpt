@@ -61,7 +61,7 @@ git clone https://github.com/KellerJordan/modded-nanogpt.git && cd modded-nanogp
 pip install -r requirements.txt
 pip install torch==2.10.0.dev20251210+cu126 --index-url https://download.pytorch.org/whl/nightly/cu126
 # downloads only the first 500M training tokens to save time
-python data/cached_fineweb10B.py 5
+python data/cached_fineweb10B_tokenmonster.py 5
 ./run.sh
 ```
 Add torchrun to path if ./run.sh gives error `torchrun: command not found`.
@@ -79,7 +79,7 @@ Note: an NVIDIA driver must already be installed on the system (useful if only t
 ```bash
 git clone https://github.com/KellerJordan/modded-nanogpt.git && cd modded-nanogpt
 sudo docker build -t modded-nanogpt .
-sudo docker run -it --rm --gpus all -v $(pwd):/modded-nanogpt modded-nanogpt python data/cached_fineweb10B.py 5
+sudo docker run -it --rm --gpus all -v $(pwd):/modded-nanogpt modded-nanogpt python data/cached_fineweb10B_tokenmonster.py 5
 sudo docker run -it --rm --gpus all -v $(pwd):/modded-nanogpt modded-nanogpt sh run.sh
 ```
 

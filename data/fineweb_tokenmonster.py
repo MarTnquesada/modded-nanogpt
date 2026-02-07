@@ -77,10 +77,10 @@ args = parser.parse_args()
 # FineWeb has a few possible subsamples available
 assert args.version in ["10B", "100B"], "version must be one of 10B, 100B"
 if args.version == "10B":
-    local_dir = "fineweb-tokenmonster-10B"
+    local_dir = "fineweb-tokmon-10B"
     remote_name = "sample-10BT"
 elif args.version == "100B":
-    local_dir = "fineweb-tokenmonster-100B"
+    local_dir = "fineweb-tokmon-100B"
     remote_name = "sample-100BT"
 
 VOCAB_NAME = "english-28416-balanced-v1"
