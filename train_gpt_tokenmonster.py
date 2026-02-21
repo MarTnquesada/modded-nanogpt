@@ -2374,7 +2374,7 @@ for step in range(train_steps + 1):
                 )
                 val_loss_npt += ce.mean()
                 if token_lengths is not None:
-                    val_loss_bpb += (ce / token_lengths[targets]).mean()
+                    val_loss_bpb += ce.sum()
                     val_bytes += token_lengths[targets].sum()
                     val_acc += (
                         (logits.argmax(dim=-1) == targets).float()
@@ -2386,9 +2386,7 @@ for step in range(train_steps + 1):
         dist.reduce(val_loss_npt, 0, op=dist.ReduceOp.AVG)
         if token_lengths is not None:
             val_acc = val_acc * 100.0 / val_bytes
-            val_loss_bpb = (
-                val_loss_bpb / val_steps
-            ) / 0.693147180559945  # convert nats to bits: / ln(2)
+            val_loss_bpb = val_loss_bpb / val_bytes / 0.693147180559945  # micro avg: total nats / total bytes / ln(2)
             dist.reduce(val_loss_bpb, 0, op=dist.ReduceOp.AVG)
             dist.reduce(val_acc, 0, op=dist.ReduceOp.AVG)
             print0(
