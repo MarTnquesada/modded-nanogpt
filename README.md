@@ -60,7 +60,9 @@ Contributors list (growing with each new record): [@bozavlado](https://x.com/boz
 To run the current record, run the following commands.
 ```bash
 git clone https://github.com/martnquesada/modded-nanogpt.git && cd modded-nanogpt
-uv sync --frozen # pip install -r requirements.txt
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+uv sync  # pip install -r requirements.txt
 # downloads only the first 500M training tokens to save time
 uv run data/cached_fineweb10B_tokenmonster.py 5
 ./run.sh

@@ -4,8 +4,10 @@ import sys
 # Read the current file and the kernels file code ASAP, for logging
 with open(sys.argv[0], "r") as f:
     code = f.read()
-with open(os.path.join(os.path.dirname(sys.argv[0]), "triton_kernels.py"), "r") as f:
-    code += f"\n\n{'-' * 40}\n# triton_kernels.py\n{'-' * 40}\n\n"
+with open(
+    os.path.join(os.path.dirname(sys.argv[0]), "triton_kernels_old.py"), "r"
+) as f:
+    code += f"\n\n{'-' * 40}\n# triton_kernels_old.py\n{'-' * 40}\n\n"
     code += f.read()
 
 import copy
@@ -34,7 +36,7 @@ import torch.nn.functional as F
 from kernels import get_kernel
 from torch import Tensor, nn
 
-from triton_kernels import (
+from triton_kernels_old import (
     XXT,
     ba_plus_cAA,
     FusedLinearReLUSquareFunction,
@@ -2386,7 +2388,9 @@ for step in range(train_steps + 1):
         dist.reduce(val_loss_npt, 0, op=dist.ReduceOp.AVG)
         if token_lengths is not None:
             val_acc = val_acc * 100.0 / val_bytes
-            val_loss_bpb = val_loss_bpb / val_bytes / 0.693147180559945  # micro avg: total nats / total bytes / ln(2)
+            val_loss_bpb = (
+                val_loss_bpb / val_bytes / 0.693147180559945
+            )  # micro avg: total nats / total bytes / ln(2)
             dist.reduce(val_loss_bpb, 0, op=dist.ReduceOp.AVG)
             dist.reduce(val_acc, 0, op=dist.ReduceOp.AVG)
             print0(

@@ -6,6 +6,7 @@ from triton.tools.tensor_descriptor import TensorDescriptor
 # -----------------------------------------------------------------------------
 # Triton kernel for symmetric matrix multiplication by @byronxu99
 
+
 @triton.jit
 def _pid_to_block(
     pid,
@@ -31,12 +32,19 @@ def _pid_to_block(
     n_idx = pid_n * BLOCK_SIZE_N
     return batch_idx, m_idx, n_idx
 
+
 @triton.jit
 def XXT_kernel(
-    A_ptr, C_ptr,
-    M, K,
-    a_stride_b, a_stride_r, a_stride_c,
-    c_stride_b, c_stride_r, c_stride_c,
+    A_ptr,
+    C_ptr,
+    M,
+    K,
+    a_stride_b,
+    a_stride_r,
+    a_stride_c,
+    c_stride_b,
+    c_stride_r,
+    c_stride_c,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
@@ -62,22 +70,15 @@ def XXT_kernel(
     offs_m = (m_idx + tl.arange(0, BLOCK_SIZE_M)) % M
     offs_n = (n_idx + tl.arange(0, BLOCK_SIZE_N)) % M
     offs_k = tl.arange(0, BLOCK_SIZE_K)
-    
-    # Load A blocks for C[m,n] = A[m,:] @ A[n,:].T
-    # Load A[m, k] -> shape (BM, BK)
     a_ptrs = A_ptr + (offs_m[:, None] * a_stride_r + offs_k[None, :] * a_stride_c)
-    # Load A[n, k] -> shape (BN, BK). Transpose to get (BK, BN) for accumulation.
-    # Loading (BN, BK) is coalesced because stride_c is 1 (contiguous dim is k).
-    at_ptrs = A_ptr + (offs_n[:, None] * a_stride_r + offs_k[None, :] * a_stride_c)
+    at_ptrs = A_ptr + (offs_k[:, None] * a_stride_c + offs_n[None, :] * a_stride_r)
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
     # Accumulate over blocks of K
     for k in tl.range(0, tl.cdiv(K, BLOCK_SIZE_K)):
-        k_remaining = K - k * BLOCK_SIZE_K
-        a = tl.load(a_ptrs, mask=offs_k[None, :] < k_remaining, other=0.0)
-        at_temp = tl.load(at_ptrs, mask=offs_k[None, :] < k_remaining, other=0.0)
-        at = tl.trans(at_temp)
+        a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
+        at = tl.load(at_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
         accumulator = tl.dot(a, at, accumulator)
         a_ptrs += BLOCK_SIZE_K * a_stride_c
         at_ptrs += BLOCK_SIZE_K * a_stride_c
@@ -97,6 +98,7 @@ def XXT_kernel(
     c_mask_t = (offs_cn[:, None] < M) & (offs_cm[None, :] < M)
     tl.store(c_ptrs_t, output.T, mask=c_mask_t)
 
+
 def XXT(A: torch.Tensor, out: torch.Tensor):
     """
     Launch Triton kernel to compute C = A @ A.T
@@ -113,10 +115,10 @@ def XXT(A: torch.Tensor, out: torch.Tensor):
     # Hardcoded configs based on H100 autotuning
     if K == 768:
         BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K = 128, 128, 64
-        num_stages, num_warps = 4, 8
+        num_stages, num_warps = 4, 4
     else:
         BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K = 64, 128, 128
-        num_stages, num_warps = 4, 8
+        num_stages, num_warps = 4, 4
 
     grid = (batch_size * triton.cdiv(M, BLOCK_SIZE_M) * triton.cdiv(M, BLOCK_SIZE_N),)
     XXT_kernel[grid](
@@ -140,13 +142,20 @@ def XXT(A: torch.Tensor, out: torch.Tensor):
     )
     return out
 
+
 @triton.jit
 def ba_plus_cAA_kernel(
-    A_ptr, C_ptr,
+    A_ptr,
+    C_ptr,
     M,
-    a_stride_b, a_stride_r, a_stride_c,
-    c_stride_b, c_stride_r, c_stride_c,
-    alpha, beta,
+    a_stride_b,
+    a_stride_r,
+    a_stride_c,
+    c_stride_b,
+    c_stride_r,
+    c_stride_c,
+    alpha,
+    beta,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
@@ -174,19 +183,15 @@ def ba_plus_cAA_kernel(
     offs_m = (m_idx + tl.arange(0, BLOCK_SIZE_M)) % M
     offs_n = (n_idx + tl.arange(0, BLOCK_SIZE_N)) % M
     offs_k = tl.arange(0, BLOCK_SIZE_K)
-    
-    # Coalesced loads similar to XXT_kernel
     a_ptrs = A_ptr + (offs_m[:, None] * a_stride_r + offs_k[None, :] * a_stride_c)
-    at_ptrs = A_ptr + (offs_n[:, None] * a_stride_r + offs_k[None, :] * a_stride_c)
+    at_ptrs = A_ptr + (offs_k[:, None] * a_stride_c + offs_n[None, :] * a_stride_r)
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
     # Accumulate over blocks of K
     for k in tl.range(0, tl.cdiv(M, BLOCK_SIZE_K)):
-        k_remaining = M - k * BLOCK_SIZE_K
-        a = tl.load(a_ptrs, mask=offs_k[None, :] < k_remaining, other=0.0)
-        at_temp = tl.load(at_ptrs, mask=offs_k[None, :] < k_remaining, other=0.0)
-        at = tl.trans(at_temp)
+        a = tl.load(a_ptrs, mask=offs_k[None, :] < M - k * BLOCK_SIZE_K, other=0.0)
+        at = tl.load(at_ptrs, mask=offs_k[:, None] < M - k * BLOCK_SIZE_K, other=0.0)
         accumulator = tl.dot(a, at, accumulator)
         a_ptrs += BLOCK_SIZE_K * a_stride_c
         at_ptrs += BLOCK_SIZE_K * a_stride_c
@@ -217,6 +222,7 @@ def ba_plus_cAA_kernel(
     c_mask_t = (offs_cn[:, None] < M) & (offs_cm[None, :] < M)
     tl.store(c_ptrs_t, output.T, mask=c_mask_t)
 
+
 def ba_plus_cAA(A: torch.Tensor, alpha: float, beta: float, out: torch.Tensor):
     """
     Launch Triton kernel to compute C = alpha * A @ A.T + beta * A
@@ -233,7 +239,7 @@ def ba_plus_cAA(A: torch.Tensor, alpha: float, beta: float, out: torch.Tensor):
 
     # Hardcoded config based on H100 autotuning (M=768)
     BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K = 128, 128, 64
-    num_stages, num_warps = 4, 8
+    num_stages, num_warps = 4, 4
 
     grid = (batch_size * triton.cdiv(M, BLOCK_SIZE_M) * triton.cdiv(M, BLOCK_SIZE_N),)
     ba_plus_cAA_kernel[grid](
@@ -258,19 +264,27 @@ def ba_plus_cAA(A: torch.Tensor, alpha: float, beta: float, out: torch.Tensor):
     )
     return out
 
+
 # -----------------------------------------------------------------------------
 # Triton kernel for MLP: relu(x @ W1.T)^2, by @andrewbriand, @jrauvola
 
+
 @triton.jit
-def linear_relu_square_kernel(a_desc, b_desc, c_desc, aux_desc,
-                                 M, N, K,
-                                 BLOCK_SIZE_M: tl.constexpr,
-                                 BLOCK_SIZE_N: tl.constexpr,
-                                 BLOCK_SIZE_K: tl.constexpr,
-                                 GROUP_SIZE_M: tl.constexpr,
-                                 NUM_SMS: tl.constexpr,
-                                 FORWARD: tl.constexpr,
-                                 ):
+def linear_relu_square_kernel(
+    a_desc,
+    b_desc,
+    c_desc,
+    aux_desc,
+    M,
+    N,
+    K,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr,
+    NUM_SMS: tl.constexpr,
+    FORWARD: tl.constexpr,
+):
     dtype = tl.bfloat16
     start_pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
@@ -355,14 +369,21 @@ def linear_relu_square(a, b, aux=None):
     aux_desc = TensorDescriptor.from_tensor(aux, [BLOCK_SIZE_M, BLOCK_SIZE_N // 2])
 
     def grid(META):
-        return (min(
-            NUM_SMS,
-            triton.cdiv(M, BLOCK_SIZE_M) * triton.cdiv(N, BLOCK_SIZE_N),
-        ), )
+        return (
+            min(
+                NUM_SMS,
+                triton.cdiv(M, BLOCK_SIZE_M) * triton.cdiv(N, BLOCK_SIZE_N),
+            ),
+        )
 
     linear_relu_square_kernel[grid](
-        a_desc, b_desc, c_desc, aux_desc,
-        M, N, K,
+        a_desc,
+        b_desc,
+        c_desc,
+        aux_desc,
+        M,
+        N,
+        K,
         BLOCK_SIZE_M=BLOCK_SIZE_M,
         BLOCK_SIZE_N=BLOCK_SIZE_N,
         BLOCK_SIZE_K=BLOCK_SIZE_K,
@@ -370,13 +391,14 @@ def linear_relu_square(a, b, aux=None):
         NUM_SMS=NUM_SMS,
         FORWARD=FORWARD,
         num_stages=num_stages,
-        num_warps=num_warps
+        num_warps=num_warps,
     )
 
     if FORWARD:
         return c, aux
     else:
         return c
+
 
 class FusedLinearReLUSquareFunction(torch.autograd.Function):
     @staticmethod
@@ -390,10 +412,13 @@ class FusedLinearReLUSquareFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         x, W1, W2, pre, post = ctx.saved_tensors
         dW2 = post.T @ grad_output
-        dpre = linear_relu_square(grad_output.view((-1, grad_output.shape[-1])), W2, aux=pre)
+        dpre = linear_relu_square(
+            grad_output.view((-1, grad_output.shape[-1])), W2, aux=pre
+        )
         dW1 = dpre.T @ x
         dx = dpre @ W1
         return dx.view(x.shape), dW1, dW2
+
 
 # -----------------------------------------------------------------------------
 # Fused Softcapped Cross Entropy
@@ -401,30 +426,40 @@ class FusedLinearReLUSquareFunction(torch.autograd.Function):
 
 @triton.jit
 def fused_softcapped_entropy_fwd_kernel(
-    logits_ptr, losses_ptr, lse_ptr, targets_ptr, mtp_weights_ptr,
-    stride_logits_n, stride_logits_v,
-    n_rows, n_cols, n_predict,
-    A, B, C,
-    BLOCK_SIZE: tl.constexpr
+    logits_ptr,
+    losses_ptr,
+    lse_ptr,
+    targets_ptr,
+    mtp_weights_ptr,
+    stride_logits_n,
+    stride_logits_v,
+    n_rows,
+    n_cols,
+    n_predict,
+    A,
+    B,
+    C,
+    BLOCK_SIZE: tl.constexpr,
 ):
     row_idx = tl.program_id(0).to(tl.int64)
     logits_row_ptr = logits_ptr + row_idx * stride_logits_n
 
-    max_val = -float('inf')
+    max_val = -float("inf")
     sum_exp = 0.0
-
-    inv_C = 1.0 / C
-    B_div_C = B * inv_C
 
     for off in range(0, n_cols, BLOCK_SIZE):
         cols = off + tl.arange(0, BLOCK_SIZE)
         mask = cols < n_cols
-        val = tl.load(logits_row_ptr + cols, mask=mask, other=-float('inf')).to(tl.float32)
-        z = A * tl.sigmoid(val * inv_C + B_div_C)
-        z = tl.where(mask, z, -float('inf'))
+        val = tl.load(logits_row_ptr + cols, mask=mask, other=-float("inf")).to(
+            tl.float32
+        )
+        z = A * tl.sigmoid((val + B) / C)
+        z = tl.where(mask, z, -float("inf"))
         curr_max = tl.max(z, axis=0)
         new_max = tl.maximum(max_val, curr_max)
-        sum_exp = sum_exp * tl.exp(max_val - new_max) + tl.sum(tl.exp(z - new_max), axis=0)
+        sum_exp = sum_exp * tl.exp(max_val - new_max) + tl.sum(
+            tl.exp(z - new_max), axis=0
+        )
         max_val = new_max
 
     lse = max_val + tl.log(sum_exp)
@@ -439,19 +474,31 @@ def fused_softcapped_entropy_fwd_kernel(
                 target = tl.load(targets_ptr + target_idx).to(tl.int32)
                 if target >= 0 and target < n_cols:
                     val_target = tl.load(logits_row_ptr + target).to(tl.float32)
-                    z_target = A * tl.sigmoid(val_target * inv_C + B_div_C)
+                    z_target = A * tl.sigmoid((val_target + B) / C)
                     total_loss += weight * (lse - z_target)
 
     tl.store(losses_ptr + row_idx, total_loss)
 
+
 @triton.jit
 def fused_softcapped_entropy_bwd_kernel(
-    grad_input_ptr, grad_output_ptr, lse_ptr, logits_ptr, targets_ptr, mtp_weights_ptr,
-    stride_logits_n, stride_logits_v, stride_grad_n, stride_grad_v,
-    n_rows, n_cols, n_predict,
-    A, B, C,
-    grad_s,
-    BLOCK_SIZE: tl.constexpr
+    grad_input_ptr,
+    grad_output_ptr,
+    lse_ptr,
+    logits_ptr,
+    targets_ptr,
+    mtp_weights_ptr,
+    stride_logits_n,
+    stride_logits_v,
+    stride_grad_n,
+    stride_grad_v,
+    n_rows,
+    n_cols,
+    n_predict,
+    A,
+    B,
+    C,
+    BLOCK_SIZE: tl.constexpr,
 ):
     row_idx = tl.program_id(0).to(tl.int64)
 
@@ -466,15 +513,11 @@ def fused_softcapped_entropy_bwd_kernel(
         if row_idx + k < n_rows:
             S_w += tl.load(mtp_weights_ptr + k)
 
-    inv_C = 1.0 / C
-    B_div_C = B * inv_C
-    inv_C_A = inv_C * A
-
     for off in range(0, n_cols, BLOCK_SIZE):
         cols = off + tl.arange(0, BLOCK_SIZE)
         mask = cols < n_cols
         val = tl.load(logits_row_ptr + cols, mask=mask, other=0.0).to(tl.float32)
-        u = val * inv_C + B_div_C
+        u = (val + B) / C
         sigmoid_u = tl.sigmoid(u)
         z = A * sigmoid_u
         p = tl.exp(z - lse)
@@ -488,33 +531,17 @@ def fused_softcapped_entropy_bwd_kernel(
                 term2 += tl.where(cols == target, weight, 0.0)
 
         grad_z = grad_loss * (term1 - term2)
-        dz_dx = inv_C_A * sigmoid_u * (1.0 - sigmoid_u)
+        dz_dx = (1.0 / C) * z * (1.0 - sigmoid_u)
         grad_x = grad_z * dz_dx
-        grad_x = grad_x / grad_s
-        grad_x = grad_x.to(tl.float8e5)
-        tl.store(grad_row_ptr + cols, grad_x, mask=mask)
+        tl.store(grad_row_ptr + cols, grad_x.to(tl.bfloat16), mask=mask)
+
 
 class FusedSoftcappedCrossEntropy(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, targets, mtp_weights, lm_head_weight, x_s, w_s, grad_s, A=23.0, B=5.0, C=7.5):
-
-        x_f8 = x.div(x_s).to(torch.float8_e4m3fn)
-        w_f8 = lm_head_weight.div(w_s).to(torch.float8_e4m3fn)
-
-        w_f8_col_major = w_f8.T.contiguous().T
-
-        logits = torch._scaled_mm(
-            x_f8,
-            w_f8_col_major,
-            out_dtype=torch.bfloat16,
-            scale_a=x.new_tensor(x_s, dtype=torch.float32),
-            scale_b=x.new_tensor(w_s, dtype=torch.float32),
-            use_fast_accum=True,
-        )
-
+    def forward(ctx, logits, targets, mtp_weights, A=23.0, B=5.0, C=7.5):
         n_rows, n_cols = logits.shape
         if mtp_weights is None:
-             mtp_weights = torch.tensor([1.0], device=logits.device, dtype=torch.float32)
+            mtp_weights = torch.tensor([1.0], device=logits.device, dtype=torch.float32)
         n_predict = mtp_weights.shape[0]
 
         losses = torch.empty(n_rows, dtype=torch.float32, device=logits.device)
@@ -526,59 +553,60 @@ class FusedSoftcappedCrossEntropy(torch.autograd.Function):
 
         grid = (n_rows,)
         fused_softcapped_entropy_fwd_kernel[grid](
-            logits, losses, lse, targets, mtp_weights,
-            logits.stride(0), logits.stride(1),
-            n_rows, n_cols, n_predict,
-            A, B, C,
+            logits,
+            losses,
+            lse,
+            targets,
+            mtp_weights,
+            logits.stride(0),
+            logits.stride(1),
+            n_rows,
+            n_cols,
+            n_predict,
+            A,
+            B,
+            C,
             BLOCK_SIZE=1024,
-            num_warps=2
+            num_warps=8,
+            num_stages=4,
         )
 
-        ctx.save_for_backward(logits, targets, mtp_weights, lse, x, lm_head_weight, x_f8, w_f8)
-        ctx.params = (A, B, C, x_s, w_s, grad_s)
+        ctx.save_for_backward(logits, targets, mtp_weights, lse)
+        ctx.params = (A, B, C)
         return losses
 
     @staticmethod
     def backward(ctx, grad_output):
-        logits, targets, mtp_weights, lse, x, lm_head_weight, x_f8, w_f8 = ctx.saved_tensors
-        A, B, C, x_s, w_s, grad_s = ctx.params
+        logits, targets, mtp_weights, lse = ctx.saved_tensors
+        A, B, C = ctx.params
         n_rows, n_cols = logits.shape
         n_predict = mtp_weights.shape[0]
 
-        grad_input = torch.empty((n_rows, n_cols), dtype=torch.float8_e5m2, device=logits.device)
+        grad_input = torch.empty(
+            (n_rows, n_cols), dtype=torch.bfloat16, device=logits.device
+        )
         grad_output = grad_output.contiguous()
 
         grid = (n_rows,)
         fused_softcapped_entropy_bwd_kernel[grid](
-            grad_input, grad_output, lse, logits, targets, mtp_weights,
-            logits.stride(0), logits.stride(1), grad_input.stride(0), grad_input.stride(1),
-            n_rows, n_cols, n_predict,
-            A, B, C,
-            grad_s,
-            BLOCK_SIZE=1024,
-            num_warps=2
-        )
-
-        x_scale = grad_input.new_tensor(x_s, dtype=torch.float32)
-        w_scale = grad_input.new_tensor(w_s, dtype=torch.float32)
-        grad_scale = grad_input.new_tensor(grad_s, dtype=torch.float32)
-
-        grad_x = torch._scaled_mm(
             grad_input,
-            w_f8.T,
-            out_dtype=torch.bfloat16,
-            scale_a=grad_scale,
-            scale_b=w_scale,
-            use_fast_accum=False,
+            grad_output,
+            lse,
+            logits,
+            targets,
+            mtp_weights,
+            logits.stride(0),
+            logits.stride(1),
+            grad_input.stride(0),
+            grad_input.stride(1),
+            n_rows,
+            n_cols,
+            n_predict,
+            A,
+            B,
+            C,
+            BLOCK_SIZE=1024,
+            num_warps=8,
+            num_stages=4,
         )
-
-        grad_w = torch._scaled_mm(
-            x_f8.T.contiguous(),
-            grad_input.T.contiguous().T,
-            out_dtype=torch.float32,
-            scale_a=x_scale,
-            scale_b=grad_scale,
-            use_fast_accum=False,
-        )
-
-        return grad_x, None, None, grad_w, None, None, None
+        return grad_input, None, None, None, None, None
