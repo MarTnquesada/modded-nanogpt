@@ -12,6 +12,7 @@ dependencies = [
 	"kernels",
 	"setuptools",
 	"typing-extensions==4.15.0",
+	"tokenmonster",
 ]
 
 [dependency-groups]

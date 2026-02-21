@@ -57,12 +57,12 @@ Contributors list (growing with each new record): [@bozavlado](https://x.com/boz
 
 To run the current record, run the following commands.
 ```bash
-git clone https://github.com/KellerJordan/modded-nanogpt.git && cd modded-nanogpt
-pip install -r requirements.txt
-pip install torch==2.10.0.dev20251210+cu126 --index-url https://download.pytorch.org/whl/nightly/cu126
+git clone https://github.com/martnquesada/modded-nanogpt.git && cd modded-nanogpt
+uv sync --frozen # pip install -r requirements.txt
+uv pip install torch==2.10.0.dev20251210+cu126 --index-url https://download.pytorch.org/whl/nightly/cu126 # pip install torch==2.10.0.dev20251210+cu126 --index-url https://download.pytorch.org/whl/nightly/cu126
 # downloads only the first 500M training tokens to save time
-python data/cached_fineweb10B_tokenmonster.py 5
-./run.sh
+uv run data/cached_fineweb10B_tokenmonster.py 5
+uv run ./run.sh
 ```
 Add torchrun to path if ./run.sh gives error `torchrun: command not found`.
 
@@ -79,7 +79,7 @@ Note: an NVIDIA driver must already be installed on the system (useful if only t
 ```bash
 git clone https://github.com/KellerJordan/modded-nanogpt.git && cd modded-nanogpt
 sudo docker build -t modded-nanogpt .
-sudo docker run -it --rm --gpus all -v $(pwd):/modded-nanogpt modded-nanogpt python data/cached_fineweb10B_tokenmonster.py 5
+sudo docker run -it --rm --gpus all -v $(pwd):/modded-nanogpt modded-nanogpt uv run data/cached_fineweb10B_tokenmonster.py 5
 sudo docker run -it --rm --gpus all -v $(pwd):/modded-nanogpt modded-nanogpt sh run.sh
 ```
 
