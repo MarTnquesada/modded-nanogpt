@@ -78,7 +78,7 @@ This approach standardizes versions for CUDA, NCCL, CUDNN, and Python, reducing 
 Note: an NVIDIA driver must already be installed on the system (useful if only the NVIDIA driver and Docker are available).
 
 ```bash
-git clone https://github.com/KellerJordan/modded-nanogpt.git && cd modded-nanogpt
+git clone https://github.com/martnquesada/modded-nanogpt.git && cd modded-nanogpt
 sudo docker build -t modded-nanogpt .
 sudo docker run -it --rm --gpus all -v $(pwd):/modded-nanogpt modded-nanogpt uv run data/cached_fineweb10B_tokenmonster.py 5
 sudo docker run -it --rm --gpus all -v $(pwd):/modded-nanogpt modded-nanogpt sh run.sh

@@ -589,6 +589,7 @@ dependencies = [
     { name = "kernels" },
     { name = "numpy" },
     { name = "setuptools" },
+    { name = "tokenmonster" },
     { name = "torch" },
     { name = "tqdm" },
     { name = "typing-extensions" },
@@ -607,7 +608,8 @@ requires-dist = [
     { name = "kernels" },
     { name = "numpy" },
     { name = "setuptools" },
-    { name = "torch" },
+    { name = "tokenmonster" },
+    { name = "torch", specifier = "==2.10" },
     { name = "tqdm" },
     { name = "typing-extensions", specifier = "==4.15.0" },
 ]
