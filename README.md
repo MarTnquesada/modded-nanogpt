@@ -62,7 +62,7 @@ To run the current record, run the following commands.
 git clone https://github.com/martnquesada/modded-nanogpt.git && cd modded-nanogpt
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
-uv sync  # pip install -r requirements.txt
+uv sync --frozen
 # downloads only the first 500M training tokens to save time
 uv run data/cached_fineweb10B_tokenmonster.py 5
 ./run.sh
