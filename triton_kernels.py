@@ -717,6 +717,7 @@ __global__ void ce_fwd_bwd_kernel(
     float* __restrict__ losses,
     __nv_fp8_e5m2* grad_input,
     int batch_size,
+    int n_vocab,
     int n_predict,
     double A_param,
     double B_param,
@@ -738,7 +739,7 @@ __global__ void ce_fwd_bwd_kernel(
 
   static_assert(VEC_WIDTH == 8);
 
-  const __nv_bfloat16 *block_logit_ptr = logits + VOCAB_SIZE * blockIdx.x;
+  const __nv_bfloat16 *block_logit_ptr = logits + n_vocab * blockIdx.x;
 
   float inv_C = 1 / C;
   float B_div_C = B * inv_C;
@@ -747,7 +748,7 @@ __global__ void ce_fwd_bwd_kernel(
   #pragma unroll 25
   for (int i = 0; i < NUM_LOADS; i++) {
     int idx = i * BLOCK_SIZE * VEC_WIDTH + threadIdx.x * VEC_WIDTH;
-    if (i < NUM_FULL_LOADS || idx < VOCAB_SIZE) {
+    if (idx < n_vocab) {
       __nv_bfloat168 result = *(__nv_bfloat168*)(&block_logit_ptr[idx]);
       __nv_bfloat168 result_sigmoid;
       #pragma unroll
@@ -786,14 +787,14 @@ __global__ void ce_fwd_bwd_kernel(
   for (int i = 0; i < NUM_LOADS; i++) {
     int idx = i * BLOCK_SIZE * VEC_WIDTH + threadIdx.x * VEC_WIDTH;
     __nv_bfloat168 l;
-    if (i < NUM_FULL_LOADS || idx < VOCAB_SIZE) {
+    if (idx < n_vocab) {
       l = *(__nv_bfloat168*)(&smem[idx]);
     }
     #pragma unroll
     for (int k = 0; k < VEC_WIDTH; k++) {
       float tmp = A * __bfloat162float(l[k]);
       tmp = __expf(tmp - block_max);
-      if (i < NUM_FULL_LOADS || idx < VOCAB_SIZE) {
+      if (idx < n_vocab) {
         thread_sum += tmp;
       }
     }
@@ -822,7 +823,7 @@ __global__ void ce_fwd_bwd_kernel(
       if (target_idx < batch_size) {
         float weight = mtp_weights[k];
         int64_t target = targets[target_idx];
-        if (target >= 0 && target < VOCAB_SIZE) {
+        if (target >= 0 && target < n_vocab) {
           float z_target = A * __bfloat162float(smem[target]);
           total_loss += weight * (lse - z_target);
         }
@@ -842,7 +843,7 @@ __global__ void ce_fwd_bwd_kernel(
     int idx = i * BLOCK_SIZE * VEC_WIDTH + threadIdx.x * VEC_WIDTH;
     __nv_fp8_e5m28 result;
 
-    if (i < NUM_FULL_LOADS || idx < VOCAB_SIZE) {
+    if (idx < n_vocab) {
       __nv_bfloat168 sigmoid_us = *(__nv_bfloat168*)(&smem[idx]);
       #pragma unroll
       for (int j = 0; j < VEC_WIDTH; j++) {
@@ -858,7 +859,7 @@ __global__ void ce_fwd_bwd_kernel(
         auto result_tmp = f32_to_fp8_e5m2(grad_x);
         result[j] = *reinterpret_cast<__nv_fp8_e5m2*>(&result_tmp);
       }
-      *(__nv_fp8_e5m28*)(&grad_input[blockIdx.x * VOCAB_SIZE + idx]) = result;
+      *(__nv_fp8_e5m28*)(&grad_input[blockIdx.x * n_vocab + idx]) = result;
     }
   }
 
@@ -889,7 +890,7 @@ __global__ void ce_fwd_bwd_kernel(
     float grad_x = grad_scale * (1.0f / C * A) * (1.0f / grad_s) * grad_z * sigmoid_u * (1.0f - sigmoid_u);
     auto result_tmp = f32_to_fp8_e5m2(grad_x);
     auto result = *reinterpret_cast<__nv_fp8_e5m2*>(&result_tmp);
-    grad_input[blockIdx.x * VOCAB_SIZE + target] = result;
+    grad_input[blockIdx.x * n_vocab + target] = result;
   }
 }
 """
@@ -911,6 +912,7 @@ def ce_fwd_bwd(
     losses: torch.Tensor,
     grad_input: torch.Tensor,
     n_rows: int,
+    n_vocab: int,
     n_predict: int,
     A: float,
     B: float,
@@ -923,7 +925,7 @@ def ce_fwd_bwd(
         grid,
         (CE_KERNEL_BLOCK_SIZE, 1, 1),
         (logits, targets, mtp_weights, losses, grad_input,
-         n_rows, n_predict, A, B, C, grad_s, grad_scale),
+         n_rows, n_vocab, n_predict, A, B, C, grad_s, grad_scale),
         shared_mem=CE_KERNEL_VOCAB_SIZE * 2,
     )
 
@@ -960,7 +962,7 @@ class FusedSoftcappedCrossEntropy(torch.autograd.Function):
         grad_input = torch.empty((n_rows, n_cols), dtype=torch.float8_e5m2, device=logits.device)
 
         ce_fwd_bwd(logits, targets, mtp_weights, losses, grad_input,
-             n_rows, n_predict, A, B, C, grad_s, grad_scale)
+             n_rows, n_cols, n_predict, A, B, C, grad_s, grad_scale)
 
         ctx.save_for_backward(logits, targets, mtp_weights, lse, x, lm_head_weight, x_f8, w_f8, grad_input)
         ctx.params = (A, B, C, x_s, w_s, grad_s)
