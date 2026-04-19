@@ -36,7 +36,7 @@ import torch.nn.functional as F
 from kernels import get_kernel
 from torch import Tensor, nn
 
-from triton_kernels import XXT, ba_plus_cAA, FusedLinearReLUSquareFunction, FusedSoftcappedCrossEntropy
+from triton_kernels import XXT, ba_plus_cAA, FusedLinearReLUSquareFunction, FusedSoftcappedCrossEntropy, transpose_add, transpose_copy
 
 dynamo.config.recompile_limit = 64
 
@@ -328,7 +328,7 @@ def sparse_comms_merge_gradients(grad, recv_idx, recv_vals, rank, world):
 # -----------------------------------------------------------------------------
 # Combined NorMuon + Adam Optimizer
 
-@dataclass
+@dataclass(slots=True)
 class ParamConfig:
     """Per-parameter configuration for NorMuonAndAdam optimizer."""
     label: str
@@ -424,7 +424,7 @@ class NorMuonAndAdam:
             self._build_param_cfg(param, label)
 
         # Assert scatter_order and work_order match present labels exactly
-        present = set(self._param_by_label.keys())
+        present = self._param_by_label.keys()
         assert set(scatter_order) == present and set(work_order) == present
 
         # Handle world_size=1: overwrite comms to "none"
@@ -730,10 +730,10 @@ class NorMuonAndAdam:
             if param.grad is None:
                 continue
 
-            # lm_head when tied: aggregate embed.grad.T (transposed shapes)
+            # lm_head when tied: aggregate embed.grad.T (tiled Triton transpose-add)
             if label == "lm_head" and do_adam and not self.split_embed:
                 if embed_param is not None and embed_param.grad is not None:
-                    param.grad.add_(embed_param.grad.T)
+                    transpose_add(embed_param.grad, param.grad)
 
             # Skip embed when tied (copied from lm_head after gather)
             if label == "embed" and not self.split_embed:
@@ -785,7 +785,7 @@ class NorMuonAndAdam:
 
         # When tied: copy lm_head.T to embed
         if do_adam and not self.split_embed and embed_param is not None and lm_param is not None:
-            embed_param.data.copy_(lm_param.data.T)
+            transpose_copy(lm_param.data, embed_param.data)
 
         # Wait for remaining gathers
         for fut in gather_futures:
@@ -1033,7 +1033,7 @@ class Yarn(nn.Module):
         self.factor2[..., 1::2] *= -1
         self.attn_scale *= 0.2 * math.log(new_window / old_window) + 1
 
-@dataclass
+@dataclass(slots=True)
 class AttnArgs:
     ve: torch.Tensor
     sa_lambdas: torch.Tensor
@@ -1149,9 +1149,9 @@ class Block(nn.Module):
 # The main model
 
 def next_multiple_of_n(v: float | int, *, n: int):
-    return next(x for x in range(n, int(v) + 1 + n, n) if x >= v)
+    return math.ceil(v / n) * n
 
-@dataclass
+@dataclass(slots=True)
 class ForwardScheduleConfig:
     mtp_weights: torch.Tensor
     ws_short: int
@@ -1371,8 +1371,7 @@ class GPT(nn.Module):
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15
         # @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1). @classiclarryd updated to 23*sigmoid((logits+5)/7.5)
         if self.training:
-            losses = FusedSoftcappedCrossEntropy.apply(x.view(-1, x.size(-1)), target_seq, mtp_weights, self.lm_head.weight, self.lm_head.x_s, self.lm_head.w_s, self.lm_head.grad_s)
-            loss = losses.sum()
+            loss = FusedSoftcappedCrossEntropy.apply(x.view(-1, x.size(-1)), target_seq, mtp_weights, self.lm_head.weight, self.lm_head.x_s, self.lm_head.w_s, self.lm_head.grad_s, grad_scale).sum()
         else:
             logits = self.lm_head(x)
             logits = 23 * torch.sigmoid((logits + 5) / 7.5)
@@ -1567,7 +1566,7 @@ def distributed_data_generator(filename_pattern: str, num_tokens: int, max_seq_l
 # -----------------------------------------------------------------------------
 # Training Management
 
-@dataclass
+@dataclass(slots=True)
 class Hyperparameters:
     # data
     data_path = os.environ.get("DATA_PATH", ".")
@@ -1595,7 +1594,7 @@ class Hyperparameters:
 
 args = Hyperparameters()
 
-@dataclass
+@dataclass(slots=True)
 class TrainingStage:
     lr_mul: float
     batch_size: int
@@ -1628,7 +1627,7 @@ class TrainingSchedule:
         self.total_steps = self.scheduled_iterations + extension_iterations
 
         # Build stage boundaries (last is extension stage)
-        ends = [0] + [round(c * scheduled_iterations) for c in accumulate(s.duration for s in stages[:-1])] + [self.total_steps]
+        ends = [0, *[round(c * scheduled_iterations) for c in accumulate(s.duration for s in stages[:-1])], self.total_steps]
         assert self.scheduled_iterations == ends[-2]
         self.boundaries = list(pairwise(ends))
 
@@ -1748,7 +1747,7 @@ class TrainingManager():
         self.optimizer = NorMuonAndAdam(
             model.named_parameters(),
             param_table=self.param_table,
-            scatter_order=list(self.param_table.keys()),  # Dict order defines scatter priority
+            scatter_order=list(self.param_table),  # Dict order defines scatter priority
             work_order=self.work_order,
             adam_defaults=adam_defaults,
             normuon_defaults=normuon_defaults,
