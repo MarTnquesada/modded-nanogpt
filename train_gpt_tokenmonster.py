@@ -10,6 +10,7 @@ with open(os.path.join(os.path.dirname(sys.argv[0]), 'triton_kernels.py'), 'r') 
 
 import copy
 import glob
+import itertools
 import math
 import threading
 import time
@@ -1496,7 +1497,7 @@ def distributed_data_generator(filename_pattern: str, num_tokens: int, max_seq_l
     if not files:
         raise FileNotFoundError(f"No files found for pattern: {filename_pattern}")
 
-    file_iter = iter(files)  # Use itertools.cycle(files) for multi-epoch training
+    file_iter = itertools.cycle(files)
     tokens = _load_data_shard(next(file_iter))
     if align_to_bos:
         shard = Shard(tokens, world_size)
@@ -1516,10 +1517,7 @@ def distributed_data_generator(filename_pattern: str, num_tokens: int, max_seq_l
                 # This shard is exhausted, load the next one in the next loop iteration.
                 shard = next_shard_getter()
                 tokens = shard.tokens
-                try:
-                    next_shard_getter = Shard.load_async(next(file_iter), world_size)
-                except StopIteration:
-                    next_shard_getter = None  # no more shards to preload
+                next_shard_getter = Shard.load_async(next(file_iter), world_size)
                 continue
 
             buf = torch.cat([tokens[i:j] for i, j in zip(start_idxs, end_idxs)])
